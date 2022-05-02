@@ -10,6 +10,7 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include "geometry_msgs/PoseStamped.h"
+#include "geometry_msgs/PoseArray.h"
 
 // Include CvBridge, Image Transport, Image msg
 #include <image_transport/image_transport.h>
@@ -18,11 +19,10 @@
 
 namespace enc = sensor_msgs::image_encodings;
 
-
 class depth_to_costmap
 {
 public:
-  ros::Subscriber sub_depth, sub_info, sub_pose;
+  ros::Subscriber sub_depth, sub_info, sub_pose, sub_bound;
   float fx_inv, fy_inv, fx, fy;
   float cx, cy;
   int height, width;
@@ -42,7 +42,10 @@ public:
   float pose[3], last_pose[3];
   bool pose_init;
 
-  cv::Mat map, gradmap;
+  std::vector<cv::Point2f> bound;
+  bool bound_received = false;
+
+  cv::Mat map, gradmap, bound_map;
 
   depth_to_costmap(ros::NodeHandle &nh) // constructor
   {
@@ -51,6 +54,7 @@ public:
     sub_depth = nh.subscribe("image",1,&depth_to_costmap::image_cb,this);
     sub_info = nh.subscribe("camera_info",10,&depth_to_costmap::info_cb,this);
     sub_pose = nh.subscribe("pose",1,&depth_to_costmap::pose_cb, this);
+    sub_bound = nh.subscribe("bound",1, &depth_to_costmap::bound_cb, this);
 
     if(not nh.getParam("depth/cam_pitch",cam_pitch))
     {
@@ -88,6 +92,7 @@ public:
     height_range_inv = max_height - min_height;
 
     map = cv::Mat::zeros(cv::Size(costmap_width_p, costmap_height_p),CV_32FC1);
+    bound_map = cv::Mat::zeros(cv::Size(costmap_width_p, costmap_height_p),CV_32FC1);
     gradmap = cv::Mat::zeros(cv::Size(costmap_width_p, costmap_height_p),CV_32FC1);
 
   }
@@ -121,6 +126,20 @@ public:
 
   }
 
+  void bound_cb(const geometry_msgs::PoseArray::ConstPtr& msg)
+  {
+    cv::Point2f temp;  // temp to hold values
+    bound.clear(); // remove last points
+    int num = msg->poses.size();  // how many points?
+    for(int i = 0; i < num; i++)
+    {
+      temp.x = msg->poses[i].position.x;
+      temp.y = msg->poses[i].position.y;
+      bound.push_back(temp);
+    }
+    bound_received = true;
+  }
+
   void info_cb(const sensor_msgs::CameraInfoConstPtr& info_msg)
   {
     fx = info_msg->K[0];
@@ -143,7 +162,7 @@ public:
     {
       return;
     }
-    
+    ros::Time begin = ros::Time::now();
     bool float_flag = false;
     float depth, x, y, z, temp_x, temp_z;
     int row_pix, column_pix;
@@ -175,6 +194,11 @@ public:
     cv::warpAffine(map, translated_image, translation_matrix, map.size());  // then we translate
     cv::warpAffine(translated_image, rotated_image, rotation_matix, map.size());  // first we rotate
     map = rotated_image.clone();
+
+    // this is for the bound layer.
+    cv::warpAffine(bound_map, translated_image, translation_matrix, map.size());
+    cv::warpAffine(translated_image, rotated_image, rotation_matix, map.size());
+    bound_map = rotated_image.clone();
 
     try
     {
@@ -229,7 +253,24 @@ public:
       ROS_ERROR("cv_bridge exception: %s", e.what());
       return;
     }
-    ROS_INFO("%f, %f, %f", delta[0], delta[1], delta[2]);
+    
+    if(bound_received)
+    {
+      bound_received = false;
+      cv::Point2f dum, temp;
+      for(int i = 0; i < bound.size(); i++)
+      {
+        dum.x = bound[i].x - pose[0];
+        dum.y = bound[i].y - pose[1];
+        temp.x = ct*dum.x - st*dum.y;  // interchange the x and y
+        temp.y = st*dum.x + ct*dum.y;
+        row_pix = temp.x/resolution_m;
+        column_pix = (temp.y + 0.5*costmap_width_m)/resolution_m;
+        cv::circle(bound_map, cv::Point(column_pix, row_pix), 0.2/resolution_m, cv::Scalar(1.0), -1);
+      }
+    }
+
+    map += bound_map;
 
     cv::Mat gradmap_new;
     cv::GaussianBlur(gradmap, gradmap_new, cv::Size(filt_size, filt_size), 0, 0, cv::BORDER_DEFAULT);
@@ -246,7 +287,10 @@ public:
     cv::flip(map, display, -1);
     cv::Mat grad_disp;
     cv::flip(gradmap_new, grad_disp, -1);
-    cv::imshow("gradmap", grad_disp);
+
+    float delta_time = (ros::Time::now() - begin).toSec();
+    ROS_INFO("%f", delta_time*1000);
+    // cv::imshow("gradmap", grad_disp);
     cv::imshow("map", display);
     // cv::imshow("test", cv_ptr->image);
     cv::waitKey(3);

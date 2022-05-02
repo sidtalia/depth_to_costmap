@@ -3,10 +3,11 @@
       <remap from="depth/camera_info" to="/zed2/zed_node/depth/camera_info"/>
       <remap from="depth/image"       to="/zed2/zed_node/depth/depth_registered"/>
       <remap from="depth/pose"        to="/mavros/local_position/pose"/>
+      <remap from="depth/bound"  to="/lane_node/points"/>
       <param name="depth/cam_pitch" value = "0.1" />
       <param name="depth/max_height" value = "0.5"/>
       <param name="depth/min_height" value = "-1.4"/>
-      <param name="depth/resolution_m" value = "0.1"/>
+      <param name="depth/resolution_m" value = "0.05"/>
       <param name="depth/costmap_width_m" value="20"/>
       <param name="depth/costmap_length_m" value="20"/>
     </node>
