@@ -35,8 +35,10 @@ public:
     P[3].x = end.x;
     P[3].y = end.y;
 
-    vec[0] = cv::Point2f(cosf(start.z),sinf(start.z));
-    vec[1] = - cv::Point2f(cosf(end.z),sinf(end.z));
+    vec[0].x = cosf(start.z);
+    vec[0].y = sinf(start.z);
+    vec[1].x = -cosf(end.z);
+    vec[1].y = -sinf(end.z);
 
     dist = cv::norm(P[3] - P[0]);
 
@@ -71,8 +73,9 @@ public:
     cv::Point2f del[2];
     float denominator,Curvature;
     del[0] = t*t*K[0] + t*K[1] + K[2];
-    del[1] = 2.0f*t*K[0] + K[1]; 
-    denominator = powf(cv::norm(del[0]), 1.5f);
+    del[1] = 2.0f*t*K[0] + K[1];
+    denominator = cv::norm(del[0]); 
+    denominator *= denominator*denominator;
     Curvature = ((del[0].x*del[1].y) - (del[0].y*del[1].x));
     Curvature /= denominator;
 
@@ -82,12 +85,12 @@ public:
   cv::Point2f curve(float t)
   {
     float t_[4];
-    float term_1 = (1.0f-t);
+    float term_1 = (1.0f - t);
     t_[3] = t*t*t;
     t_[2] = 3.0f*t*t*term_1;
     t_[1] = 3.0f*t*term_1*term_1;
     t_[0] = term_1*term_1*term_1;
-    return P[0]*t_[0] + P[1]*t_[1] + P[2]*t_[2] + P[4]*t_[4];
+    return P[0]*t_[0] + P[1]*t_[1] + P[2]*t_[2] + P[3]*t_[3];
   }
 
   cv::Point2f normal(float t)
@@ -96,6 +99,11 @@ public:
     del = t*t*K[0] + t*K[1] + K[2];
     out.x = -del.y;
     out.y = del.x;
+    float length = cv::norm(out);
+    if(length != 0)
+    {
+      out /= length;
+    }
     return out;
   }
 
@@ -146,6 +154,11 @@ public:
   float lookahead_distance;
   std::vector<Bezier> traj;
   float goal_cost_multiplier, car_width, car_length;
+  int step_x, step_y;
+  float width_y, length_x, resol_x, resol_y;
+  float last_curvature, last_length;
+  float delta_curvature_cost, delta_length_cost;
+  float last_steering, last_speed, speed_meas;
 
 
   depth_to_costmap(ros::NodeHandle &nh) // constructor
@@ -213,7 +226,30 @@ public:
     {
       goal_cost_multiplier = 5;
     }
-    
+    if(not nh.getParam("depth/length_x", length_x))
+    {
+      length_x = 15;
+    }
+    if(not nh.getParam("depth/width_y", width_y))
+    {
+      width_y = 3;
+    }
+    if(not nh.getParam("depth/step_x", step_x))
+    {
+      step_x = 5;
+    }
+    if(not nh.getParam("depth/step_y", step_y))
+    {
+      step_y = 5;
+    }
+    if(not nh.getParam("depth/delta_curvature_cost", delta_curvature_cost))
+    {
+      delta_curvature_cost = 10;
+    }
+    if(not nh.getParam("depth/delta_length_cost", delta_length_cost))
+    {
+      delta_length_cost = 10;
+    }
     costmap_height_p = costmap_length_m/resolution_m;
     costmap_width_p  = costmap_width_m/resolution_m;
     height_range_inv = max_height - min_height;
@@ -222,6 +258,13 @@ public:
     bound_map = cv::Mat::zeros(cv::Size(costmap_width_p, costmap_height_p),CV_32FC1);
     gradmap = cv::Mat::zeros(cv::Size(costmap_width_p, costmap_height_p),CV_32FC1);
 
+    resol_x = length_x/float(step_x);
+    resol_y = 2*width_y/float(step_y);
+
+    last_length = 0;
+    last_curvature = 0;
+    last_speed = 0;
+    last_steering = 0;
   }
 
   void rpy_from_quat(float rpy[3],const geometry_msgs::PoseStamped::ConstPtr& msg) 
@@ -306,6 +349,8 @@ public:
     delta[0] = delta_x*ct - delta_y*st;
     delta[1] = delta_x*st + delta_y*ct;
     delta[2] = delta_t;
+    
+    speed_meas = delta[0];
 
     //  set the last known pose
     last_pose[0] = pose[0];
@@ -459,21 +504,11 @@ public:
     float delta_x = control_pose[0] - last_pose[0];
     float delta_y = control_pose[1] - last_pose[1];
     float delta_t = control_pose[2] - last_pose[2];
-    float delta[3], ct = cosf(-control_pose[2]), st = sinf(-control_pose[2]);  // backward rotation
+    float delta[3], ct = cosf(-last_pose[2]), st = sinf(-last_pose[2]);  // backward rotation
     //  find delta pose in body frame
     delta[0] = delta_x*ct - delta_y*st;
     delta[1] = delta_x*st + delta_y*ct;
     delta[2] = delta_t;
-    
-    // get the costmap in current body reference frame
-    cv::Point2f center(costmap_width_p*0.5, 0);
-    cv::Mat costmap, translated_image;  // temporary images
-    float warp_values[] = { 1.0, 0.0, -delta[1]/resolution_m, 0.0, 1.0, -delta[0]/resolution_m };  // translation matrix
-    cv::Mat translation_matrix = cv::Mat(2, 3, CV_32F, warp_values);    // fill in the values
-    cv::Mat rotation_matix = getRotationMatrix2D(center, -delta[2]*57.3, 1.0);  // rotate matrix around camera. angle in degrees    
-    //  in forward state propagation, we rotate, then translate. Therefore, in backward transform, we translate, then rotate
-    cv::warpAffine(final_map, translated_image, translation_matrix, map.size());  // first we translate
-    cv::warpAffine(translated_image, costmap, rotation_matix, map.size());  // then we rotate
 
     // super impose the path on to the costmap (this is for visualization only)
     cv::Point2f dum, temp;
@@ -482,73 +517,132 @@ public:
     float row_pix, column_pix;
     for(int i = 0; i < path.size(); i++)
     {
-      dum.x = path[i].x - control_pose[0];
-      dum.y = path[i].y - control_pose[1];
+      dum.x = path[i].x - last_pose[0];
+      dum.y = path[i].y - last_pose[1];
       temp.x = ct*dum.x - st*dum.y;  // interchange the x and y
       temp.y = st*dum.x + ct*dum.y;
       if(temp.x > lookahead_distance and !goal_found)
       {
         goal.x = temp.x;
         goal.y = temp.y;
-        goal.z = path[i].z - control_pose[2];  // take offset for heading
+        goal.z = path[i].z - last_pose[2];  // take offset for heading
+        goal_found = true;
       }
     }
 
-    float car_length=2, car_width = 2;
-    cv::Point3f start(-car_length, 0, 0), end(0,0,goal.z); // start point is actually a tad bit behind
+    ros::Time start_time = ros::Time::now();
+    cv::Point3f start(delta[0] - car_length, delta[1], delta[2]), end(0,0,goal.z); // start point is actually a tad bit behind
     cv::Point2f track, normal;
     // generate trajectory coefficients.
     traj.clear();
-    float cost[26], lowest_cost = 100000;
+    int num_index = (step_x * step_y) + 1;
+    float cost[num_index], lowest_cost = 100000;
     int lowest_index;
     float arc_length_inv;
-    for(int i = 0; i < 5; i++)
+    int index;
+    float delta_curvature, delta_length, hit_cost;
+    float step_size;
+    float track_left = -car_width/2, track_right = car_width/2, track_res = car_width*0.1f;
+
+    for(int i = 0; i < step_x; i++)
     {
-      end.x = (i+1)*3.0f;
-      for(int j = 0; j < 5; j++)
+      end.x = (i+1)*resol_x;
+      for(int j = 0; j < step_y; j++)
       {
-        end.y = -3.0f + j*1.5f;
+        index = step_y*i + j;
+        end.y = (-width_y + j*resol_y)*float(i+1)/float(step_x);
         Bezier curve(start,end);
-        cost[ 5*i + j] = 0;
-        float step_size = curve.step_size(resolution_m);
+        cost[index] = 0;
+        step_size = curve.step_size(resolution_m);
         for(float k = 0; k < 1; k += step_size)
         {
           track = curve.curve(k);
           normal = curve.normal(k);
           arc_length_inv = 1.0f/curve.arc_length;
-          for(float l= -car_width/2 ; l <= car_width/2; l+= car_width*resolution_m)
+          for(float l= track_left ; l <= track_right; l+= track_res)
           {
             row_pix = (track.x + l * normal.x) /resolution_m;
             row_pix = std::max(std::min(row_pix, float(costmap_height_p)), 0.0f);
             column_pix = (track.y + l * normal.y + 0.5 * costmap_width_m)/resolution_m;
             column_pix = std::max(std::min(column_pix, float(costmap_width_p)), 0.0f);
-            cost[5*i+j] += final_map.at<float>(int(row_pix), int(column_pix)) * resolution_m;
+            hit_cost = 2 * final_map.at<float>(int(row_pix), int(column_pix));  // double it because half the car's height range = 100% probability of hit
+            cost[index] += hit_cost * hit_cost * resolution_m;
           }
         }
-        cost[5*i + j] += goal_cost_multiplier * curve.distance_to_goal(goal);
-        if(cost[5*i + j] < lowest_cost)
+        cost[index] += goal_cost_multiplier * curve.distance_to_goal(goal);
+
+        delta_curvature = curve.C[0] - last_curvature;
+        delta_length = cv::norm(curve.P[0] - curve.P[3]) - last_length;
+        cost[index] += delta_curvature_cost * delta_curvature * delta_curvature;
+        cost[index] += delta_length_cost * delta_length * delta_length;
+        
+        if(cost[index] < lowest_cost)
         {
-          lowest_index = 5*i + j;
-          lowest_cost = cost[5*i + j];
+          lowest_index = index;
+          lowest_cost = cost[index];
         }
         traj.push_back(curve);
       }
     }
+
+    last_curvature = traj[lowest_index].C[0];
+    last_length = cv::norm(traj[lowest_index].P[3] - traj[lowest_index].P[0]);
+
+    float speed, steering, curvature, future_dist;
+    future_dist = std::min(2*speed_meas, 0.1f*last_length);
+    step_size = traj[lowest_index].step_size(future_dist);
+    step_size = std::max(step_size, 0.02f);
+    
+    curvature = traj[lowest_index].C_from_t(step_size);
+    
+    float speed_curve = std::max(0.001f, fabs(last_curvature));
+    speed = std::min(sqrtf(last_length), 1/speed_curve);
+    speed = std::min(speed, 5.0f);
+    
+    if(last_length < car_length*1.5)
+    {
+      steering = 0;
+      speed = 0;
+    }
+    else
+    {
+      steering = atanf(car_length * curvature);
+    }
+    steering = std::min(std::max(-0.3f, steering), 0.3f);
+    steering = 0.5*steering + 0.5*last_steering;
+    float delta_steering = std::max(std::min((steering - last_steering), 0.02f), -0.02f);
+    steering = last_steering + delta_steering;
+    speed = 0.5*speed + 0.5*last_speed;
+
+    last_steering = steering;
+    last_speed = speed;
+
+    //------------------------------- visualisation only ------------------------
     if(visualize_path)
     {
-      for(float t = 0; t<= 1; t += 0.1)
+      for(float t = 0; t<= 1.0; t += 0.01)
       {
         track = traj[lowest_index].curve(t);
         row_pix = (track.x) /resolution_m;
         row_pix = std::max(std::min(row_pix, float(costmap_height_p)), 0.0f);
         column_pix = (track.y + 0.5 * costmap_width_m)/resolution_m;
         column_pix = std::max(std::min(column_pix, float(costmap_width_p)), 0.0f);
-        cv::circle(final_map, cv::Point(column_pix, row_pix), 0.2/resolution_m, cv::Scalar(1.0), -1);
+        final_map.at<float>(int(row_pix), int(column_pix)) = 1.0f;
+
+        normal = traj[lowest_index].normal(t);
+        for(float l= - car_width/2; l<= car_width/2; l += car_width * resolution_m)
+        { 
+          row_pix = (track.x + l * normal.x) /resolution_m;
+          row_pix = std::max(std::min(row_pix, float(costmap_height_p)), 0.0f);
+          column_pix = (track.y + l * normal.y + 0.5 * costmap_width_m)/resolution_m;
+          column_pix = std::max(std::min(column_pix, float(costmap_width_p)), 0.0f);
+          final_map.at<float>(int(row_pix), int(column_pix)) = 1.0f;
+        }
       }
       for(int i = 0; i < path.size(); i++)
       {
-        dum.x = path[i].x - control_pose[0];
-        dum.y = path[i].y - control_pose[1];
+        dum.x = path[i].x - last_pose[0];
+        dum.y = path[i].y - last_pose[1];
         temp.x = ct*dum.x - st*dum.y;  // interchange the x and y
         temp.y = st*dum.x + ct*dum.y;
         row_pix = temp.x/resolution_m;
@@ -562,6 +656,8 @@ public:
     cv::imshow("map", display);
     // cv::imshow("test", cv_ptr->image);
     cv::waitKey(3);
+    ROS_INFO("speed: %f, steering: %f,processing time: %f", speed, steering * 57.3f, (ros::Time::now() - start_time).toSec() );
+
 
   }
 

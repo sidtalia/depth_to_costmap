@@ -13,5 +13,16 @@
       <param name="depth/costmap_length_m" value="20"/>
       <param name="depth/bound_time_constant" value = "2.0"/>
       <param name="depth/visualize_path" value="true" />
+      <param name="depth/goal_cost_multiplier" value = "2" />
+      <param name="depth/delta_curvature_cost" value = "1.0" />
+      <param name="depth/delta_length_cost" value = "1.0" />
+      <param name="depth/lookahead_distance" value="10.0"/>
+      <param name="depth/car_width" value="2.5"/>
+      <param name="depth/car_length" value="2.0"/>
+      <param name="depth/length_x" value="10.0"/>
+      <param name="depth/width_y" value="5.0"/>
+      <param name="depth/step_x" value="10"/>
+      <param name="depth/step_y" value="20"/>
+
     </node>
 </launch>
