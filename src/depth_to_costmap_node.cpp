@@ -16,7 +16,7 @@
 #include <image_transport/image_transport.h>
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.h>
-
+#include "ackermann_msgs/AckermannDriveStamped.h"
 namespace enc = sensor_msgs::image_encodings;
 
 
@@ -123,6 +123,7 @@ class depth_to_costmap
 {
 public:
   ros::Subscriber sub_depth, sub_info, sub_pose, sub_bound, sub_ctrl, sub_path;
+  ros::Publisher control_publisher;
   float fx_inv, fy_inv, fx, fy;
   float cx, cy;
   int height, width;
@@ -173,6 +174,7 @@ public:
     sub_bound = nh.subscribe("bound", 1, &depth_to_costmap::bound_cb, this);
     sub_ctrl = nh.subscribe("pose", 1, &depth_to_costmap::control_cb, this);
     sub_path = nh.subscribe("path", 1, &depth_to_costmap::path_cb, this);
+    control_publisher = nh.advertise<ackermann_msgs::AckermannDriveStamped>("/depth/control",10);
 
     if(not nh.getParam("depth/cam_pitch",cam_pitch))
     {
@@ -443,7 +445,7 @@ public:
         temp.y = st*dum.x + ct*dum.y;
         row_pix = temp.x/resolution_m;
         column_pix = (temp.y + 0.5*costmap_width_m)/resolution_m;
-        cv::circle(bound_map, cv::Point(column_pix, row_pix), 0.5/resolution_m, cv::Scalar(1.0), -1);
+        cv::circle(bound_map, cv::Point(column_pix, row_pix), 0.2/resolution_m, cv::Scalar(1.0), -1);
       }
     }
 
@@ -484,6 +486,16 @@ public:
     path_received = true;
   }
 
+  void control_pub(float steer, float speed)
+  {
+    ackermann_msgs::AckermannDriveStamped output_msg;
+    output_msg.header.stamp = ros::Time::now();
+    output_msg.header.frame_id = "";
+    output_msg.drive.steering_angle = steer;
+    output_msg.drive.speed = speed;
+    control_publisher.publish(output_msg);
+  }
+
   void control_cb(const geometry_msgs::PoseStamped::ConstPtr& msg)
   {
     float rpy[3], control_pose[3];
@@ -495,7 +507,7 @@ public:
     {
       return;
     }
-    new_map = false;
+    // new_map = false;
     if(not path_received)
     {
       return;
@@ -515,13 +527,14 @@ public:
     cv::Point3f goal;
     bool goal_found;
     float row_pix, column_pix;
-    for(int i = 0; i < path.size(); i++)
+    int path_size = path.size();
+    for(int i = 0; i < path_size; i++)
     {
       dum.x = path[i].x - last_pose[0];
       dum.y = path[i].y - last_pose[1];
       temp.x = ct*dum.x - st*dum.y;  // interchange the x and y
       temp.y = st*dum.x + ct*dum.y;
-      if(temp.x > lookahead_distance and !goal_found)
+      if((temp.x > lookahead_distance and !goal_found) or i == path_size -1)
       {
         goal.x = temp.x;
         goal.y = temp.y;
@@ -531,7 +544,7 @@ public:
     }
 
     ros::Time start_time = ros::Time::now();
-    cv::Point3f start(delta[0] - car_length, delta[1], delta[2]), end(0,0,goal.z); // start point is actually a tad bit behind
+    cv::Point3f start(delta[0] - car_length*cosf(delta[2]), delta[1] - car_length*sinf(delta[2]), delta[2]), end(0,0,goal.z); // start point is actually a tad bit behind
     cv::Point2f track, normal;
     // generate trajectory coefficients.
     traj.clear();
@@ -616,8 +629,9 @@ public:
 
     last_steering = steering;
     last_speed = speed;
-
-    //------------------------------- visualisation only ------------------------
+    control_pub(steering, speed);
+    // ------------------------------- visualisation only ------------------------
+    cv::Mat display_map = final_map.clone();
     if(visualize_path)
     {
       for(float t = 0; t<= 1.0; t += 0.01)
@@ -627,7 +641,7 @@ public:
         row_pix = std::max(std::min(row_pix, float(costmap_height_p)), 0.0f);
         column_pix = (track.y + 0.5 * costmap_width_m)/resolution_m;
         column_pix = std::max(std::min(column_pix, float(costmap_width_p)), 0.0f);
-        final_map.at<float>(int(row_pix), int(column_pix)) = 1.0f;
+        display_map.at<float>(int(row_pix), int(column_pix)) = 1.0f;
 
         normal = traj[lowest_index].normal(t);
         for(float l= - car_width/2; l<= car_width/2; l += car_width * resolution_m)
@@ -636,7 +650,7 @@ public:
           row_pix = std::max(std::min(row_pix, float(costmap_height_p)), 0.0f);
           column_pix = (track.y + l * normal.y + 0.5 * costmap_width_m)/resolution_m;
           column_pix = std::max(std::min(column_pix, float(costmap_width_p)), 0.0f);
-          final_map.at<float>(int(row_pix), int(column_pix)) = 1.0f;
+          display_map.at<float>(int(row_pix), int(column_pix)) = 1.0f;
         }
       }
       for(int i = 0; i < path.size(); i++)
@@ -647,17 +661,16 @@ public:
         temp.y = st*dum.x + ct*dum.y;
         row_pix = temp.x/resolution_m;
         column_pix = (temp.y + 0.5*costmap_width_m)/resolution_m;
-        cv::circle(final_map, cv::Point(column_pix, row_pix), 0.2/resolution_m, cv::Scalar(1.0), -1);
+        cv::circle(display_map, cv::Point(column_pix, row_pix), 0.2/resolution_m, cv::Scalar(1.0), -1);
       }
     }
 
     cv::Mat display;
-    cv::flip(final_map, display, -1);
+    cv::flip(display_map, display, -1);
     cv::imshow("map", display);
     // cv::imshow("test", cv_ptr->image);
     cv::waitKey(3);
     ROS_INFO("speed: %f, steering: %f,processing time: %f", speed, steering * 57.3f, (ros::Time::now() - start_time).toSec() );
-
 
   }
 

@@ -110,6 +110,7 @@ INCLUDE_DIRS
 CATKIN_DEPENDS roscpp
                sensor_msgs
                std_msgs
+               ackermann_msgs
                cv_bridge
                image_transport
 )
