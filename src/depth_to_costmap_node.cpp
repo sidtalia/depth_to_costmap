@@ -161,6 +161,7 @@ public:
   float delta_curvature_cost, delta_length_cost;
   float last_steering, last_speed, speed_meas;
 
+  bool use_cam_info_preset;
 
   depth_to_costmap(ros::NodeHandle &nh) // constructor
   {
@@ -251,6 +252,22 @@ public:
     if(not nh.getParam("depth/delta_length_cost", delta_length_cost))
     {
       delta_length_cost = 10;
+    }
+    if(not nh.getParam("depth/use_cam_info_preset", use_cam_info_preset))
+    {
+      use_cam_info_preset = false;
+    }
+    if(use_cam_info_preset)
+    {
+      fx = 548.83068f;
+      fy = 548.83068f;
+      fx_inv = 1.0f/fx;
+      fy_inv = 1.0f/fy;
+      cx = 638.52880f;
+      cy = 365.00677f;
+      height = 720;
+      width = 1280;
+      cam_init = true;
     }
     costmap_height_p = costmap_length_m/resolution_m;
     costmap_width_p  = costmap_width_m/resolution_m;
@@ -371,9 +388,9 @@ public:
     map = rotated_image.clone();
 
     // this is for the bound layer.
-    cv::warpAffine(bound_map, translated_image, translation_matrix, map.size());
-    cv::warpAffine(translated_image, rotated_image, rotation_matix, map.size());
-    bound_map = rotated_image.clone();
+    cv::warpAffine(bound_map, rotated_image, rotation_matix, map.size());
+    cv::warpAffine(rotated_image, translated_image, translation_matrix, map.size());
+    bound_map = translated_image.clone();
 
     try
     {
@@ -449,7 +466,7 @@ public:
       }
     }
 
-    final_map = map + bound_map;
+    final_map = map + bound_map; // + gradmap*delta[0]/resolution_m;
     new_map = true;
 
     cv::Mat gradmap_new;
@@ -463,7 +480,7 @@ public:
     // ROS_INFO("%f", delta_time*1000);
     // cv::imshow("gradmap", grad_disp);
     // cv::imshow("map", display);
-    // // cv::imshow("test", cv_ptr->image);
+    // cv::imshow("test", cv_ptr->image);
     // cv::waitKey(3);
 
   }
