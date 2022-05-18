@@ -9,9 +9,9 @@
       <param name="depth/max_height" value = "1.0"/>
       <param name="depth/min_height" value = "-1.2"/>
       <param name="depth/resolution_m" value = "0.05"/>
-      <param name="depth/costmap_width_m" value="30"/>
+      <param name="depth/costmap_width_m" value="20"/>
       <param name="depth/costmap_length_m" value="30"/>
-      <param name="depth/bound_time_constant" value = "5.0"/>
+      <param name="depth/bound_time_constant" value = "2.0"/>
       <param name="depth/visualize_path" value="true" />
       <param name="depth/goal_cost_multiplier" value = "1" />
       <param name="depth/delta_curvature_cost" value = "0.1" />

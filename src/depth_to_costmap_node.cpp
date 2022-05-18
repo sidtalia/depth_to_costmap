@@ -109,7 +109,14 @@ public:
 
   cv::Point2f tangent(float t)
   {
-    return t*t*K[0] + t*K[1] + K[2];
+    cv::Point2f out;
+    out = t*t*K[0] + t*K[1] + K[2];
+    float length = cv::norm(out);
+    if(length != 0)
+    {
+      out /= length;
+    }
+    return out;
   }
 
   float step_size(float resolution)
@@ -154,7 +161,7 @@ public:
   std::vector<cv::Point3f> path;
   float lookahead_distance;
   std::vector<Bezier> traj;
-  float goal_cost_multiplier, car_width, car_length;
+  float goal_cost_multiplier, car_width, car_length, car_length_full;
   int step_x, step_y;
   float width_y, length_x, resol_x, resol_y;
   float last_curvature, last_length;
@@ -256,6 +263,10 @@ public:
     if(not nh.getParam("depth/use_cam_info_preset", use_cam_info_preset))
     {
       use_cam_info_preset = false;
+    }
+    if(not nh.getParam("depth/car_length_full", car_length_full))
+    {
+      car_length_full = 3.0f;
     }
     if(use_cam_info_preset)
     {
@@ -409,7 +420,7 @@ public:
       // u is width, v is height. for opencv "at", row comes first(so height, width or y,x and not x,y)
       for(int u = 0; u < width; u++)
       {
-        for(int v = height*0.4; v < height*0.8; v++)
+        for(int v = 0; v < height*0.8; v++)
         {
           if(float_flag)
           {
@@ -462,7 +473,7 @@ public:
         temp.y = st*dum.x + ct*dum.y;
         row_pix = temp.x/resolution_m;
         column_pix = (temp.y + 0.5*costmap_width_m)/resolution_m;
-        cv::circle(bound_map, cv::Point(column_pix, row_pix), 0.2/resolution_m, cv::Scalar(1.0), -1);
+        cv::circle(bound_map, cv::Point(column_pix, row_pix), 0.4/resolution_m, cv::Scalar(1.0), -1);
       }
     }
 
@@ -562,7 +573,7 @@ public:
 
     ros::Time start_time = ros::Time::now();
     cv::Point3f start(delta[0] - car_length*cosf(delta[2]), delta[1] - car_length*sinf(delta[2]), delta[2]), end(0,0,goal.z); // start point is actually a tad bit behind
-    cv::Point2f track, normal;
+    cv::Point2f track, normal, tangent;
     // generate trajectory coefficients.
     traj.clear();
     int num_index = (step_x * step_y) + 1;
@@ -581,6 +592,14 @@ public:
       {
         index = step_y*i + j;
         end.y = (-width_y + j*resol_y)*float(i+1)/float(step_x);
+        if(end.x - start.x < car_length_full*2.0f)
+        {
+          end.z = -(0.2f - j*(0.4f/step_y));
+        }
+        else
+        {
+          end.z = goal.z;
+        }
         Bezier curve(start,end);
         cost[index] = 0;
         step_size = curve.step_size(resolution_m);
@@ -588,12 +607,13 @@ public:
         {
           track = curve.curve(k);
           normal = curve.normal(k);
+          tangent = curve.tangent(k);
           arc_length_inv = 1.0f/curve.arc_length;
           for(float l= track_left ; l <= track_right; l+= track_res)
           {
-            row_pix = (track.x + l * normal.x) /resolution_m;
+            row_pix = (track.x + l * normal.x + car_length_full * tangent.x ) /resolution_m;
             row_pix = std::max(std::min(row_pix, float(costmap_height_p)), 0.0f);
-            column_pix = (track.y + l * normal.y + 0.5 * costmap_width_m)/resolution_m;
+            column_pix = (track.y + l * normal.y + car_length_full * tangent.y + 0.5 * costmap_width_m)/resolution_m;
             column_pix = std::max(std::min(column_pix, float(costmap_width_p)), 0.0f);
             hit_cost = 2 * final_map.at<float>(int(row_pix), int(column_pix));  // double it because half the car's height range = 100% probability of hit
             cost[index] += hit_cost * hit_cost * resolution_m;
@@ -663,9 +683,9 @@ public:
         normal = traj[lowest_index].normal(t);
         for(float l= - car_width/2; l<= car_width/2; l += car_width * resolution_m)
         { 
-          row_pix = (track.x + l * normal.x) /resolution_m;
+          row_pix = (track.x + l * normal.x + car_length_full * tangent.x) /resolution_m;
           row_pix = std::max(std::min(row_pix, float(costmap_height_p)), 0.0f);
-          column_pix = (track.y + l * normal.y + 0.5 * costmap_width_m)/resolution_m;
+          column_pix = (track.y + l * normal.y + car_length_full * tangent.y + 0.5 * costmap_width_m)/resolution_m;
           column_pix = std::max(std::min(column_pix, float(costmap_width_p)), 0.0f);
           display_map.at<float>(int(row_pix), int(column_pix)) = 1.0f;
         }
