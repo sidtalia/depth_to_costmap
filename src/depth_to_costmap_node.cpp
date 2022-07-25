@@ -222,7 +222,7 @@ public:
     }
     if(not nh.getParam("depth/lookahead_distance", lookahead_distance))
     {
-      lookahead_distance = 10;
+      lookahead_distance = 7;
     }
     if(not nh.getParam("depth/car_width", car_width))
     {
