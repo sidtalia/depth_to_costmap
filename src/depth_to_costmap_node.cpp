@@ -42,8 +42,8 @@ public:
 
     dist = cv::norm(P[3] - P[0]);
 
-    P[1] = P[0] + 0.33*dist*vec[0];
-    P[2] = P[3] + 0.33*dist*vec[1];
+    P[1] = P[0] + 0.4*dist*vec[0];
+    P[2] = P[3] + 0.4*dist*vec[1];
 
     for(int i=0; i<3; i++)
     {
@@ -592,14 +592,7 @@ public:
       {
         index = step_y*i + j;
         end.y = (-width_y + j*resol_y)*float(i+1)/float(step_x);
-        if(end.x - start.x < car_length_full*2.0f)
-        {
-          end.z = -(0.2f - j*(0.4f/step_y));
-        }
-        else
-        {
-          end.z = goal.z;
-        }
+        end.z = -(0.2f - j*(0.4f/step_y));
         Bezier curve(start,end);
         cost[index] = 0;
         step_size = curve.step_size(resolution_m);
